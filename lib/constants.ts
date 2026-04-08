@@ -73,6 +73,12 @@ export const STORAGE_KEYS = {
   ajustesFriends: "inevolving_ajustes_friends",
   /** Próxima data de renovação (YYYY-MM-DD) em Ajustes. */
   ajustesRenewal: "inevolving_ajustes_renewal",
+  /** Convites de compartilhamento de categoria (mock local). */
+  categoryShareInvites: "inevolving_category_share_invites",
+  /** Categorias aceitas como convidado (cópias no dashboard). */
+  categoryShareAccepted: "inevolving_category_share_accepted",
+  /** Tarefas colaborativas em categorias compartilhadas (mock local). */
+  sharedCategoryTasks: "inevolving_shared_category_tasks",
 } as const;
 
 /** 1 = escuro, 2 = claro (legado docs) */

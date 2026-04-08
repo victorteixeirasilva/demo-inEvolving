@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { SparklesIcon, PencilSquareIcon, PlusCircleIcon } from "@heroicons/react/24/outline";
@@ -12,6 +12,8 @@ import { FadeInView, ParallaxSection } from "@/components/layout/ScrollReveal";
 import { EditarCategoriaModal } from "@/components/features/dashboard/EditarCategoriaModal";
 import { NovaCategoriaModal } from "@/components/features/dashboard/NovaCategoriaModal";
 import { useMockDashboard } from "@/hooks/useMockDashboard";
+import { leaveSharedCategoryAsInvitee, loadAcceptedSharedCategories } from "@/lib/category-share-storage";
+import { loadAjustesProfile } from "@/lib/ajustes-storage";
 import { STORAGE_KEYS } from "@/lib/constants";
 import { hasVisionBoardPreview } from "@/lib/vision-board";
 import type { Category } from "@/lib/types/models";
@@ -23,6 +25,19 @@ export default function DashboardPage() {
 
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [showNovaCategoria, setShowNovaCategoria] = useState(false);
+  const [sharedCategoriesTick, setSharedCategoriesTick] = useState(0);
+
+  useEffect(() => {
+    const onSharedChanged = () => setSharedCategoriesTick((t) => t + 1);
+    window.addEventListener("inevolving:shared-categories-changed", onSharedChanged);
+    return () => window.removeEventListener("inevolving:shared-categories-changed", onSharedChanged);
+  }, []);
+
+  const categoryList = useMemo(() => {
+    if (!data) return [];
+    const shared = loadAcceptedSharedCategories().map((x) => x.category);
+    return [...data.categoryDTOList, ...shared];
+  }, [data, sharedCategoriesTick]);
 
   const openCategory = (c: Category) => {
     try {
@@ -31,6 +46,24 @@ export default function DashboardPage() {
       /* ignore */
     }
     router.push("/dashboard/categoria");
+  };
+
+  const viewerEmailForShare = () => {
+    const p = loadAjustesProfile().email.trim().toLowerCase();
+    try {
+      const login = String(localStorage.getItem(STORAGE_KEYS.email) ?? "").trim().toLowerCase();
+      return p || login;
+    } catch {
+      return p;
+    }
+  };
+
+  const handleLeaveSharedCategory = (c: Category) => {
+    const token = c.shareToken;
+    if (!token) return;
+    if (!window.confirm("Remover esta categoria compartilhada do seu dashboard?")) return;
+    const r = leaveSharedCategoryAsInvitee(token, viewerEmailForShare());
+    if (!r.ok) window.alert(r.message);
   };
 
   const handleCategorySaved = (
@@ -171,7 +204,7 @@ export default function DashboardPage() {
           </GlassCard>
         )}
 
-        {data && data.categoryDTOList.length === 0 && (
+        {data && categoryList.length === 0 && (
           <GlassCard>
             <p className="text-[var(--text-muted)]">
               Nenhuma categoria. Crie em{" "}
@@ -183,23 +216,35 @@ export default function DashboardPage() {
           </GlassCard>
         )}
 
-        {data && data.categoryDTOList.length > 0 && (
+        {data && categoryList.length > 0 && (
           <StaggerList className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {data.categoryDTOList.map((c) => (
+            {categoryList.map((c) => (
               <GlassCard key={c.id} className="flex flex-col">
                 {/* cabeçalho com badge de objetivos + botão de editar */}
                 <div className="flex items-start justify-between gap-2">
-                  <h2 className="text-lg font-semibold text-[var(--text-primary)] leading-snug">
-                    {c.categoryName}
-                  </h2>
-                  <button
-                    type="button"
-                    aria-label={`Editar categoria ${c.categoryName}`}
-                    onClick={() => setEditingCategory(c)}
-                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-[var(--text-muted)] transition-all duration-[380ms] hover:bg-brand-blue/10 hover:text-brand-cyan"
-                  >
-                    <PencilSquareIcon className="h-5 w-5" aria-hidden />
-                  </button>
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <h2 className="text-lg font-semibold text-[var(--text-primary)] leading-snug">
+                      {c.categoryName}
+                    </h2>
+                    {c.sharedFrom && (
+                      <p className="text-xs font-medium text-brand-cyan">
+                        Compartilhada · Proprietário:{" "}
+                        <span className="text-[var(--text-muted)]">
+                          {c.sharedFrom.ownerName?.trim() || c.sharedFrom.ownerEmail}
+                        </span>
+                      </p>
+                    )}
+                  </div>
+                  {!c.sharedFrom && (
+                    <button
+                      type="button"
+                      aria-label={`Editar categoria ${c.categoryName}`}
+                      onClick={() => setEditingCategory(c)}
+                      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-[var(--text-muted)] transition-all duration-[380ms] hover:bg-brand-blue/10 hover:text-brand-cyan"
+                    >
+                      <PencilSquareIcon className="h-5 w-5" aria-hidden />
+                    </button>
+                  )}
                 </div>
 
                 <p className="mt-2 line-clamp-3 flex-1 text-sm text-[var(--text-muted)]">
@@ -210,12 +255,29 @@ export default function DashboardPage() {
                   {c.objectives.length} objetivo(s)
                 </p>
 
+                {c.sharedFrom && (
+                  <p className="mt-2 text-[11px] leading-relaxed text-brand-cyan/90">
+                    <span className="font-semibold">Tarefas (convidado):</span> abra os detalhes desta categoria — o botão
+                    &quot;Adicionar tarefa&quot; fica no topo da página (não use só &quot;Nova tarefa&quot; em Tarefas).
+                  </p>
+                )}
+
+                {c.sharedFrom && c.shareToken && (
+                  <button
+                    type="button"
+                    onClick={() => handleLeaveSharedCategory(c)}
+                    className="tap-target mt-3 w-full rounded-xl border border-brand-pink/35 bg-brand-pink/10 py-2.5 text-xs font-semibold text-brand-pink transition-all duration-[380ms] hover:bg-brand-pink/20"
+                  >
+                    Sair desta categoria compartilhada
+                  </button>
+                )}
+
                 <button
                   type="button"
                   onClick={() => openCategory(c)}
                   className="tap-target mt-4 w-full rounded-xl border border-[var(--glass-border)] bg-brand-blue/10 py-3 text-sm font-semibold text-brand-cyan transition-all duration-[380ms] hover:border-brand-cyan/50 hover:shadow-glow"
                 >
-                  Ver detalhes da categoria
+                  {c.sharedFrom ? "Abrir categoria (adicionar tarefas aqui)" : "Ver detalhes da categoria"}
                 </button>
               </GlassCard>
             ))}

@@ -13,6 +13,10 @@ import { Input } from "@/components/ui/Input";
 import { GlassSelect } from "@/components/ui/GlassSelect";
 import { DateField } from "@/components/ui/DateField";
 import { RecurringTaskSwitch } from "@/components/ui/RecurringTaskSwitch";
+import {
+  addCollaborativeTask,
+  type SharedTaskCollaborationMeta,
+} from "@/lib/shared-category-tasks-storage";
 import type { Objective, Tarefa } from "@/lib/types/models";
 
 const ease = [0.16, 1, 0.3, 1] as const;
@@ -54,9 +58,27 @@ export type NovaTarefaModalProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated: (task: Tarefa) => void;
+  /**
+   * Quando definido, o select de objetivos fica restrito a esta lista
+   * (categoria própria ou compartilhada). Se omitido, carrega todos os objetivos do mock.
+   */
+  objectivesForSelect?: Objective[] | null;
+  /** Texto extra abaixo do título (ex.: nome da categoria compartilhada). */
+  contextSubtitle?: string | null;
+  /** Convidado: cria só no armazenamento colaborativo (sem POST do mock). */
+  createCollaborativeOnly?: boolean;
+  collaborationMeta?: SharedTaskCollaborationMeta | null;
 };
 
-export function NovaTarefaModal({ open, onOpenChange, onCreated }: NovaTarefaModalProps) {
+export function NovaTarefaModal({
+  open,
+  onOpenChange,
+  onCreated,
+  objectivesForSelect,
+  contextSubtitle,
+  createCollaborativeOnly,
+  collaborationMeta,
+}: NovaTarefaModalProps) {
   const [submitting, setSubmitting] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
   const [objectives, setObjectives] = useState<Objective[]>([]);
@@ -86,29 +108,42 @@ export function NovaTarefaModal({ open, onOpenChange, onCreated }: NovaTarefaMod
   const isRecurring = watch("isRecurring");
   const recurringDays = watch("recurringDays") ?? [];
 
-  /* Buscar objetivos */
+  /** `null`/`undefined` = carregar todos; array (pode ser vazio) = só esses objetivos. */
+  const useFixedObjectives = objectivesForSelect != null;
+
+  /* Buscar objetivos (fluxo normal) ou usar lista fixa (categoria compartilhada / filtro dono) */
   useEffect(() => {
-    if (!open || fetchedObjs.current) return;
+    if (!open) return;
+    if (useFixedObjectives) {
+      setObjectives(objectivesForSelect ?? []);
+      return;
+    }
+    if (fetchedObjs.current) return;
     fetchedObjs.current = true;
     fetch("/api/mock/objetivos")
       .then((r) => r.json())
       .then((d: Objective[]) => setObjectives(d))
       .catch(() => {});
-  }, [open]);
+  }, [open, objectivesForSelect, useFixedObjectives]);
 
   useEffect(() => {
-    if (!open) { setApiError(null); return; }
+    if (!open) {
+      setApiError(null);
+      return;
+    }
+    const list = objectivesForSelect ?? [];
+    const firstObj = useFixedObjectives ? list[0]?.id ?? 0 : 0;
     reset({
       nameTask: "",
       descriptionTask: "",
-      idObjective: 0,
+      idObjective: useFixedObjectives && list.length === 1 ? firstObj : 0,
       dateTask: new Date().toISOString().slice(0, 10),
       isRecurring: false,
       recurringDays: [],
       recurringUntil: "",
     });
     setApiError(null);
-  }, [open, reset]);
+  }, [open, reset, useFixedObjectives, objectivesForSelect]);
 
   const toggleDay = (day: number) => {
     const cur = recurringDays;
@@ -121,8 +156,39 @@ export function NovaTarefaModal({ open, onOpenChange, onCreated }: NovaTarefaMod
 
   const onSubmit = async (data: FormValues) => {
     setApiError(null);
+    if (useFixedObjectives) {
+      const list = objectivesForSelect ?? [];
+      if (list.length === 0) {
+        setApiError("Não há objetivos disponíveis neste contexto.");
+        return;
+      }
+      const allowed = new Set(list.map((o) => o.id));
+      if (!allowed.has(data.idObjective)) {
+        setApiError("Selecione um objetivo desta categoria.");
+        return;
+      }
+    }
     setSubmitting(true);
     try {
+      if (createCollaborativeOnly && collaborationMeta) {
+        const created = addCollaborativeTask({
+          task: {
+            nameTask: data.nameTask.trim(),
+            descriptionTask: (data.descriptionTask ?? "").trim(),
+            status: "PENDING",
+            dateTask: data.dateTask,
+            idObjective: data.idObjective,
+            isRecurring: data.isRecurring,
+            recurringDays: data.isRecurring ? data.recurringDays : [],
+            recurringUntil: data.isRecurring ? data.recurringUntil : undefined,
+          },
+          collaboration: collaborationMeta,
+        });
+        onCreated(created);
+        onOpenChange(false);
+        return;
+      }
+
       const res = await fetch("/api/mock/tarefas", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -183,7 +249,9 @@ export function NovaTarefaModal({ open, onOpenChange, onCreated }: NovaTarefaMod
                     Nova tarefa
                   </Dialog.Title>
                   <p id="nova-tarefa-desc" className="mt-0.5 text-sm text-[var(--text-muted)]">
-                    Preencha os dados da tarefa e vincule a um objetivo.
+                    {contextSubtitle
+                      ? contextSubtitle
+                      : "Preencha os dados da tarefa e vincule a um objetivo."}
                   </p>
                 </div>
                 <Dialog.Close
@@ -235,8 +303,16 @@ export function NovaTarefaModal({ open, onOpenChange, onCreated }: NovaTarefaMod
                   <label htmlFor="t-obj" className="mb-1 block text-sm font-medium text-[var(--text-primary)]">
                     Objetivo <span className="text-brand-pink" aria-hidden>*</span>
                   </label>
-                  <GlassSelect id="t-obj" {...register("idObjective")}>
-                    <option value={0}>Selecione um objetivo…</option>
+                  <GlassSelect
+                    id="t-obj"
+                    {...register("idObjective")}
+                    disabled={useFixedObjectives && objectives.length === 0}
+                  >
+                    <option value={0}>
+                      {useFixedObjectives && objectives.length === 0
+                        ? "Nenhum objetivo nas suas categorias próprias"
+                        : "Selecione um objetivo…"}
+                    </option>
                     {objectives.map((o) => (
                       <option key={o.id} value={o.id}>{o.nameObjective}</option>
                     ))}
@@ -315,7 +391,15 @@ export function NovaTarefaModal({ open, onOpenChange, onCreated }: NovaTarefaMod
                   <Dialog.Close asChild>
                     <Button type="button" variant="outline" className="flex-1 sm:flex-none">Cancelar</Button>
                   </Dialog.Close>
-                  <Button type="submit" className="flex-1 sm:flex-none" disabled={submitting || !isDirty}>
+                  <Button
+                    type="submit"
+                    className="flex-1 sm:flex-none"
+                    disabled={
+                      submitting ||
+                      !isDirty ||
+                      (useFixedObjectives && objectives.length === 0)
+                    }
+                  >
                     {submitting ? "Criando…" : "Criar tarefa"}
                   </Button>
                 </div>

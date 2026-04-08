@@ -113,6 +113,32 @@ export const mockTarefas: Tarefa[] = [
     isRecurring: true,
     recurringDays: [1, 3, 5],
     recurringUntil: daysFromNow(30),
+    subtasks: [
+      {
+        id: "st-demo-1",
+        nameTask: "Cartões IAM users e policies",
+        descriptionTask: "Focar em policies anexadas a roles",
+        dateTask: daysAgo(0),
+        status: "DONE",
+        idObjective: 1,
+      },
+      {
+        id: "st-demo-2",
+        nameTask: "Quiz rápido do capítulo",
+        descriptionTask: "",
+        dateTask: daysAgo(0),
+        status: "IN_PROGRESS",
+        idObjective: 1,
+      },
+      {
+        id: "st-demo-3",
+        nameTask: "Anotar dúvidas para revisão",
+        descriptionTask: "",
+        dateTask: daysAgo(0),
+        status: "PENDING",
+        idObjective: 1,
+      },
+    ],
   },
   {
     id: 102,

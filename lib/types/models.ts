@@ -20,6 +20,18 @@ export interface Category {
   categoryName: string;
   categoryDescription: string;
   objectives: Objective[];
+  /**
+   * Quando a categoria aparece no dashboard do convidado após aceitar o compartilhamento.
+   * Não vem da API base; é mesclado no cliente.
+   */
+  sharedFrom?: {
+    ownerEmail: string;
+    ownerName?: string;
+  };
+  /** Token do convite (cliente) — usado para sair de uma categoria compartilhada aceita. */
+  shareToken?: string;
+  /** Id da categoria no contexto do dono (positivo), para tarefas colaborativas quando o convite não está no storage. */
+  sharedSourceCategoryId?: number;
 }
 
 export interface ResponseDashboard {
@@ -33,6 +45,19 @@ export interface ResponseDashboard {
 }
 
 export type TarefaStatus = "PENDING" | "IN_PROGRESS" | "DONE" | "OVERDUE" | "CANCELLED";
+
+/**
+ * Subtarefa = mesma forma conceitual de uma tarefa simples, sempre ligada a uma tarefa pai.
+ * `idObjective` deve coincidir com o da tarefa pai (sem filtro de objetivo no Kanban de subtarefas).
+ */
+export interface TarefaSubtarefa {
+  id: string;
+  nameTask: string;
+  descriptionTask: string;
+  dateTask: string;
+  status: TarefaStatus;
+  idObjective: number;
+}
 
 export interface Tarefa {
   id: number;
@@ -49,6 +74,18 @@ export interface Tarefa {
   recurringUntil?: string; // YYYY-MM-DD
   blockedByObjective?: boolean;
   cancellationReason?: string;
+  /** Checklist opcional (subtarefas). */
+  subtasks?: TarefaSubtarefa[];
+  /**
+   * Tarefa colaborativa vinculada a categoria compartilhada (mock local).
+   * Visível ao dono e aos convidados com convite aceito.
+   */
+  sharedTask?: {
+    sourceCategoryId: number;
+    ownerEmail: string;
+    createdByEmail: string;
+    createdByName?: string;
+  };
 }
 
 export interface Transacao {

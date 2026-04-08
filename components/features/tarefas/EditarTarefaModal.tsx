@@ -6,20 +6,24 @@ import { motion } from "framer-motion";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { CalendarDaysIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { CalendarDaysIcon, PlusCircleIcon, TrashIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { GlassSelect } from "@/components/ui/GlassSelect";
 import { DateField } from "@/components/ui/DateField";
 import { RecurringTaskSwitch } from "@/components/ui/RecurringTaskSwitch";
+import { EditarSubtarefaModal } from "@/components/features/tarefas/EditarSubtarefaModal";
+import { SubtarefasKanbanBoard } from "@/components/features/tarefas/SubtarefasKanbanBoard";
 import {
   getTopCancellationReasons,
   parseCancellationSegments,
   recordCancellationReasons,
 } from "@/lib/cancel-reasons-storage";
 import { buildGoogleCalendarEventEditUrl } from "@/lib/google-calendar-url";
-import type { Objective, Tarefa, TarefaStatus } from "@/lib/types/models";
+import { migrateSubtasksFromParent, stripEmptySubtasks, syncSubtasksObjective } from "@/lib/subtarefas";
+import { deleteCollaborativeTask, updateCollaborativeTask } from "@/lib/shared-category-tasks-storage";
+import type { Objective, Tarefa, TarefaStatus, TarefaSubtarefa } from "@/lib/types/models";
 
 const ease = [0.16, 1, 0.3, 1] as const;
 
@@ -76,14 +80,32 @@ export type EditarTarefaModalProps = {
   task: Tarefa | null;
   onOpenChange: (open: boolean) => void;
   onSaved: (updated: Tarefa) => void;
+  /** Objetivos permitidos (tarefa colaborativa: só os da categoria compartilhada). `undefined` = todos (mock). */
+  objectiveOptionsOverride?: Objective[];
+  /** E-mail do usuário atual (excluir tarefa colaborativa só se for o autor). */
+  viewerEmail?: string;
+  onDeleted?: (taskId: number) => void;
 };
 
-export function EditarTarefaModal({ open, task, onOpenChange, onSaved }: EditarTarefaModalProps) {
+export function EditarTarefaModal({
+  open,
+  task,
+  onOpenChange,
+  onSaved,
+  objectiveOptionsOverride,
+  viewerEmail,
+  onDeleted,
+}: EditarTarefaModalProps) {
   const [submitting, setSubmitting] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
   const [objectives, setObjectives] = useState<Objective[]>([]);
   const [topCancelReasons, setTopCancelReasons] = useState<{ reason: string; count: number }[]>([]);
+  const [subtasksState, setSubtasksState] = useState<TarefaSubtarefa[]>([]);
+  const [subModalOpen, setSubModalOpen] = useState(false);
+  const [subModalMode, setSubModalMode] = useState<"create" | "edit">("create");
+  const [subModalEditing, setSubModalEditing] = useState<TarefaSubtarefa | null>(null);
   const fetchedObjs = useRef(false);
+  const subtasksSnapshotRef = useRef<string>("");
 
   const { register, handleSubmit, control, reset, watch, setValue, formState: { errors, isDirty } } =
     useForm<FormValues>({
@@ -105,10 +127,18 @@ export function EditarTarefaModal({ open, task, onOpenChange, onSaved }: EditarT
   const watchDate = watch("dateTask");
 
   useEffect(() => {
-    if (!open || fetchedObjs.current) return;
+    if (!open) return;
+    if (objectiveOptionsOverride !== undefined) {
+      setObjectives(objectiveOptionsOverride);
+      return;
+    }
+    if (fetchedObjs.current) return;
     fetchedObjs.current = true;
-    fetch("/api/mock/objetivos").then(r => r.json()).then((d: Objective[]) => setObjectives(d)).catch(() => {});
-  }, [open]);
+    fetch("/api/mock/objetivos")
+      .then((r) => r.json())
+      .then((d: Objective[]) => setObjectives(d))
+      .catch(() => {});
+  }, [open, objectiveOptionsOverride]);
 
   useEffect(() => {
     if (!open) { setApiError(null); return; }
@@ -124,8 +154,13 @@ export function EditarTarefaModal({ open, task, onOpenChange, onSaved }: EditarT
       recurringDays: task.recurringDays ?? [],
       recurringUntil: task.recurringUntil ?? "",
     });
+    const migrated = migrateSubtasksFromParent(task.subtasks, task);
+    setSubtasksState(migrated);
+    subtasksSnapshotRef.current = JSON.stringify(migrated);
     setApiError(null);
   }, [open, task, reset]);
+
+  const subtasksDirty = JSON.stringify(subtasksState) !== subtasksSnapshotRef.current;
 
   useEffect(() => {
     if (!open || watchStatus !== "CANCELLED" || !watchObjective) {
@@ -158,13 +193,79 @@ export function EditarTarefaModal({ open, task, onOpenChange, onSaved }: EditarT
     window.open(googleAgendaUrl, "_blank", "noopener,noreferrer");
   };
 
+  const objectiveLabel =
+    objectives.find((o) => o.id === watchObjective)?.nameObjective ?? "Objetivo da tarefa pai";
+
+  const openNewSubtask = () => {
+    setSubModalMode("create");
+    setSubModalEditing(null);
+    setSubModalOpen(true);
+  };
+
+  const openEditSubtask = (s: TarefaSubtarefa) => {
+    setSubModalMode("edit");
+    setSubModalEditing(s);
+    setSubModalOpen(true);
+  };
+
+  const handleSubSave = (s: TarefaSubtarefa) => {
+    const oid = watchObjective >= 1 ? watchObjective : s.idObjective;
+    const next = { ...s, idObjective: oid };
+    if (subModalMode === "create") {
+      setSubtasksState((prev) => [...prev, next]);
+    } else {
+      setSubtasksState((prev) => prev.map((x) => (x.id === next.id ? next : x)));
+    }
+  };
+
+  const handleSubDelete = (id: string) => {
+    setSubtasksState((prev) => prev.filter((x) => x.id !== id));
+  };
+
   const onSubmit = async (data: FormValues) => {
     if (!task) return;
     setApiError(null);
+    if (objectiveOptionsOverride !== undefined) {
+      if (objectiveOptionsOverride.length === 0) {
+        setApiError("Nenhum objetivo disponível para esta categoria.");
+        return;
+      }
+      const allowed = new Set(objectiveOptionsOverride.map((o) => o.id));
+      if (!allowed.has(data.idObjective)) {
+        setApiError("Escolha um objetivo desta categoria compartilhada.");
+        return;
+      }
+    }
     setSubmitting(true);
     try {
       const cancelRaw =
         data.status === "CANCELLED" ? (data.cancellationReason ?? "").trim() : undefined;
+      const subtasksClean = stripEmptySubtasks(syncSubtasksObjective(subtasksState, data.idObjective));
+
+      if (task.sharedTask) {
+        const updated = updateCollaborativeTask(task.id, {
+          nameTask: data.nameTask.trim(),
+          descriptionTask: (data.descriptionTask ?? "").trim(),
+          idObjective: data.idObjective,
+          dateTask: data.dateTask,
+          status: data.status,
+          cancellationReason: data.status === "CANCELLED" ? cancelRaw : undefined,
+          isRecurring: data.isRecurring,
+          recurringDays: data.isRecurring ? data.recurringDays : [],
+          recurringUntil: data.isRecurring ? data.recurringUntil : undefined,
+          subtasks: subtasksClean.length > 0 ? subtasksClean : undefined,
+        });
+        if (!updated) {
+          setApiError("Não foi possível salvar a tarefa colaborativa.");
+          return;
+        }
+        if (data.status === "CANCELLED" && cancelRaw) {
+          recordCancellationReasons(data.idObjective, cancelRaw);
+        }
+        onSaved(updated);
+        onOpenChange(false);
+        return;
+      }
 
       const res = await fetch(`/api/mock/tarefas/${task.id}`, {
         method: "PUT",
@@ -179,6 +280,7 @@ export function EditarTarefaModal({ open, task, onOpenChange, onSaved }: EditarT
           isRecurring: data.isRecurring,
           recurringDays: data.isRecurring ? data.recurringDays : [],
           recurringUntil: data.isRecurring ? data.recurringUntil : undefined,
+          subtasks: subtasksClean,
         }),
       });
       const result = (await res.json()) as { ok?: boolean; message?: string };
@@ -199,6 +301,7 @@ export function EditarTarefaModal({ open, task, onOpenChange, onSaved }: EditarT
         isRecurring: data.isRecurring,
         recurringDays: data.isRecurring ? (data.recurringDays ?? []) : [],
         recurringUntil: data.isRecurring ? data.recurringUntil : undefined,
+        subtasks: subtasksClean.length > 0 ? subtasksClean : undefined,
       });
       onOpenChange(false);
     } catch {
@@ -208,9 +311,33 @@ export function EditarTarefaModal({ open, task, onOpenChange, onSaved }: EditarT
     }
   };
 
+  const canDeleteCollaborative =
+    Boolean(
+      task?.sharedTask &&
+        viewerEmail &&
+        task.sharedTask.createdByEmail === viewerEmail.trim().toLowerCase()
+    );
+
+  const handleDeleteCollaborative = () => {
+    if (!task?.sharedTask || !viewerEmail) return;
+    if (!window.confirm("Excluir esta tarefa? Esta ação não pode ser desfeita.")) return;
+    const r = deleteCollaborativeTask(task.id, viewerEmail);
+    if (!r.ok) {
+      setApiError(r.message);
+      return;
+    }
+    onDeleted?.(task.id);
+    onOpenChange(false);
+  };
+
+  useEffect(() => {
+    if (!open) setSubModalOpen(false);
+  }, [open]);
+
   if (!task) return null;
 
   return (
+    <>
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className={cn(
@@ -223,7 +350,7 @@ export function EditarTarefaModal({ open, task, onOpenChange, onSaved }: EditarT
         >
           <motion.div
             className={cn(
-              "relative my-auto w-full max-w-[min(100%,32rem)] overflow-hidden rounded-2xl border border-[var(--glass-border)]",
+              "relative my-auto w-full max-w-[min(100%,72rem)] overflow-hidden rounded-2xl border border-[var(--glass-border)]",
               "bg-[var(--glass-bg)] shadow-glass-lg backdrop-blur-glass",
               "dark:shadow-[0_18px_50px_rgba(0,0,0,0.45),0_0_0_1px_rgba(255,255,255,0.06)_inset]"
             )}
@@ -249,6 +376,17 @@ export function EditarTarefaModal({ open, task, onOpenChange, onSaved }: EditarT
               <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4" noValidate>
                 {apiError && (
                   <p className="rounded-xl border border-brand-pink/40 bg-brand-pink/10 px-3 py-2 text-sm text-brand-pink" role="alert">{apiError}</p>
+                )}
+
+                {task.sharedTask && (
+                  <div className="rounded-xl border border-brand-cyan/30 bg-brand-cyan/[0.08] px-3 py-2 text-xs text-[var(--text-muted)]">
+                    <span className="font-semibold text-brand-cyan">Categoria compartilhada</span>
+                    {" · "}
+                    Criada por{" "}
+                    <span className="font-medium text-[var(--text-primary)]">
+                      {task.sharedTask.createdByName?.trim() || task.sharedTask.createdByEmail}
+                    </span>
+                  </div>
                 )}
 
                 {/* Nome */}
@@ -298,6 +436,34 @@ export function EditarTarefaModal({ open, task, onOpenChange, onSaved }: EditarT
                       ))}
                     </GlassSelect>
                   </div>
+                </div>
+
+                <div className="rounded-2xl border border-brand-cyan/25 bg-brand-cyan/[0.06] p-4">
+                  <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-[var(--text-primary)]">Subtarefas</p>
+                      <p className="mt-0.5 text-xs text-[var(--text-muted)]">
+                        Mesmo formato das tarefas simples; objetivo sempre o da tarefa pai (
+                        <span className="font-medium text-brand-cyan">{objectiveLabel}</span>
+                        ). Quadro sem filtro por objetivo. Só é possível criar subtarefas aqui, após a tarefa existir.
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full shrink-0 sm:w-auto"
+                      disabled={watchObjective < 1}
+                      onClick={openNewSubtask}
+                    >
+                      <PlusCircleIcon className="h-5 w-5" aria-hidden />
+                      Nova subtarefa
+                    </Button>
+                  </div>
+                  <SubtarefasKanbanBoard
+                    subtasks={subtasksState}
+                    onSubtasksChange={setSubtasksState}
+                    onEditSubtask={openEditSubtask}
+                  />
                 </div>
 
                 <div className="rounded-xl border border-[var(--glass-border)] bg-[color-mix(in_srgb,var(--glass-bg)_70%,transparent)] px-4 py-3">
@@ -406,13 +572,34 @@ export function EditarTarefaModal({ open, task, onOpenChange, onSaved }: EditarT
                   </motion.div>
                 )}
 
-                <div className="flex gap-2 border-t border-[var(--glass-border)] pt-4 sm:justify-end">
-                  <Dialog.Close asChild>
-                    <Button type="button" variant="outline" className="flex-1 sm:flex-none">Cancelar</Button>
-                  </Dialog.Close>
-                  <Button type="submit" className="flex-1 sm:flex-none" disabled={submitting || !isDirty}>
-                    {submitting ? "Salvando…" : "Salvar alterações"}
-                  </Button>
+                <div className="flex flex-col gap-2 border-t border-[var(--glass-border)] pt-4 sm:flex-row sm:items-center sm:justify-between">
+                  {canDeleteCollaborative ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="order-2 border-brand-pink/40 text-brand-pink hover:bg-brand-pink/10 sm:order-1"
+                      onClick={handleDeleteCollaborative}
+                    >
+                      <TrashIcon className="h-5 w-5" aria-hidden />
+                      Excluir tarefa
+                    </Button>
+                  ) : (
+                    <span className="order-2 hidden sm:order-1 sm:block" />
+                  )}
+                  <div className="order-1 flex gap-2 sm:order-2 sm:ml-auto">
+                    <Dialog.Close asChild>
+                      <Button type="button" variant="outline" className="flex-1 sm:flex-none">
+                        Cancelar
+                      </Button>
+                    </Dialog.Close>
+                    <Button
+                      type="submit"
+                      className="flex-1 sm:flex-none"
+                      disabled={submitting || (!isDirty && !subtasksDirty)}
+                    >
+                      {submitting ? "Salvando…" : "Salvar alterações"}
+                    </Button>
+                  </div>
                 </div>
               </form>
             </div>
@@ -420,5 +607,18 @@ export function EditarTarefaModal({ open, task, onOpenChange, onSaved }: EditarT
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
+
+    <EditarSubtarefaModal
+      open={subModalOpen}
+      onOpenChange={setSubModalOpen}
+      mode={subModalMode}
+      subtask={subModalEditing}
+      defaultDateTask={watchDate || task.dateTask}
+      idObjective={watchObjective >= 1 ? watchObjective : task.idObjective}
+      objectiveName={objectiveLabel}
+      onSave={handleSubSave}
+      onDelete={subModalMode === "edit" ? handleSubDelete : undefined}
+    />
+    </>
   );
 }

@@ -6,10 +6,11 @@ import { motion } from "framer-motion";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { XMarkIcon, TrashIcon } from "@heroicons/react/24/outline";
+import { ShareIcon, TrashIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { CompartilharCategoriaModal } from "@/components/features/dashboard/CompartilharCategoriaModal";
 import { ObjetivosEditor, useAllObjectives } from "./ObjetivosEditor";
 import type { Category, Objective } from "@/lib/types/models";
 
@@ -42,6 +43,7 @@ export function EditarCategoriaModal({
   const [submitting, setSubmitting] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
 
   const [localObjectives, setLocalObjectives] = useState<Objective[]>([]);
   const initialObjectiveIds = useRef<Set<number>>(new Set());
@@ -52,6 +54,7 @@ export function EditarCategoriaModal({
     register,
     handleSubmit,
     reset,
+    getValues,
     formState: { errors, isDirty },
   } = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -62,6 +65,7 @@ export function EditarCategoriaModal({
     if (!open) {
       setApiError(null);
       setConfirmDelete(false);
+      setShareOpen(false);
       return;
     }
     const objs = category?.objectives ?? [];
@@ -138,7 +142,20 @@ export function EditarCategoriaModal({
 
   if (!category) return null;
 
+  const categoryShareSnapshot: Category = {
+    id: category.id,
+    categoryName: (getValues("categoryName") || category.categoryName).trim() || category.categoryName,
+    categoryDescription: (getValues("categoryDescription") ?? category.categoryDescription ?? "").trim(),
+    objectives: [...localObjectives],
+  };
+
   return (
+    <>
+    <CompartilharCategoriaModal
+      open={shareOpen}
+      onOpenChange={setShareOpen}
+      categorySnapshot={categoryShareSnapshot}
+    />
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay
@@ -239,6 +256,22 @@ export function EditarCategoriaModal({
                   allObjectives={allObjectives}
                 />
 
+                <div className="rounded-xl border border-brand-cyan/20 bg-brand-cyan/[0.06] px-4 py-3">
+                  <p className="text-xs text-[var(--text-muted)]">
+                    Convide alguém da sua lista de amigos (Ajustes) para ver esta categoria no dashboard após aceitar o
+                    link.
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="mt-3 w-full sm:w-auto"
+                    onClick={() => setShareOpen(true)}
+                  >
+                    <ShareIcon className="h-5 w-5" aria-hidden />
+                    Compartilhar
+                  </Button>
+                </div>
+
                 {/* ── Rodapé ── */}
                 <div className="flex flex-col gap-2 border-t border-[var(--glass-border)] pt-4 sm:flex-row sm:items-center sm:justify-between">
                   {!confirmDelete ? (
@@ -290,5 +323,6 @@ export function EditarCategoriaModal({
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
+    </>
   );
 }

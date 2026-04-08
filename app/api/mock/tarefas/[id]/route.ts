@@ -11,6 +11,7 @@ type Body = {
   recurringDays?: number[];
   recurringUntil?: string;
   cancellationReason?: string;
+  subtasks?: unknown;
 };
 
 /**

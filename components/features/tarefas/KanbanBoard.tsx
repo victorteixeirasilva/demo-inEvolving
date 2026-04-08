@@ -31,10 +31,12 @@ import {
   ClockIcon,
   ExclamationTriangleIcon,
   QueueListIcon,
+  UserGroupIcon,
   XCircleIcon,
 } from "@heroicons/react/24/outline";
 import { cn } from "@/lib/utils";
 import { GlassSelect } from "@/components/ui/GlassSelect";
+import { subtasksProgress } from "@/lib/subtarefas";
 import type { Tarefa, TarefaStatus } from "@/lib/types/models";
 import {
   emptyKanbanOrder,
@@ -95,6 +97,38 @@ const kanbanCollisionDetection: CollisionDetection = (args) => {
   return closestCorners(args);
 };
 
+function SharedTaskBadge({ task }: { task: Tarefa }) {
+  if (!task.sharedTask) return null;
+  return (
+    <span
+      className="inline-flex max-w-full items-center gap-0.5 rounded-md bg-brand-cyan/15 px-1.5 py-0.5 text-[10px] font-semibold text-brand-cyan"
+      title={`Categoria compartilhada · Por ${task.sharedTask.createdByName?.trim() || task.sharedTask.createdByEmail}`}
+    >
+      <UserGroupIcon className="h-3 w-3 shrink-0" aria-hidden />
+      <span className="truncate">Compart.</span>
+    </span>
+  );
+}
+
+function SubtasksProgressBadge({ task }: { task: Tarefa }) {
+  const p = subtasksProgress(task);
+  if (!p) return null;
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 font-medium tabular-nums",
+        p.done === p.total
+          ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+          : "bg-brand-blue/12 text-brand-blue dark:text-brand-cyan"
+      )}
+      title="Subtarefas concluídas / total"
+    >
+      <QueueListIcon className="h-3 w-3 shrink-0 opacity-80" aria-hidden />
+      {p.done}/{p.total}
+    </span>
+  );
+}
+
 /* ─── Card sortável (desktop): arrastar em quase tudo; só o nome abre edição ─── */
 function SortableTaskCardDesktop({
   task,
@@ -145,9 +179,19 @@ function SortableTaskCardDesktop({
         {task.descriptionTask && (
           <p className="line-clamp-2 text-xs text-[var(--text-muted)]">{task.descriptionTask}</p>
         )}
+        {task.sharedTask && (
+          <p className="text-[10px] text-[var(--text-muted)]">
+            Por{" "}
+            <span className="font-medium text-[var(--text-primary)]">
+              {task.sharedTask.createdByName?.trim() || task.sharedTask.createdByEmail}
+            </span>
+          </p>
+        )}
         <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
           <CalendarDaysIcon className="h-3 w-3 shrink-0" aria-hidden />
           <span>{fmt}</span>
+          <SharedTaskBadge task={task} />
+          <SubtasksProgressBadge task={task} />
           {task.isRecurring && (
             <span className="inline-flex items-center gap-0.5 rounded-md bg-brand-purple/15 px-1.5 py-0.5 font-medium text-brand-purple dark:text-brand-pink">
               <ArrowPathIcon className="h-3 w-3" aria-hidden />
@@ -179,6 +223,8 @@ function TaskCardOverlay({ task }: { task: Tarefa }) {
       <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
         <CalendarDaysIcon className="h-3 w-3 shrink-0" aria-hidden />
         <span>{fmt}</span>
+        <SharedTaskBadge task={task} />
+        <SubtasksProgressBadge task={task} />
         {task.isRecurring && (
           <span className="text-brand-purple dark:text-brand-pink">recorrente</span>
         )}
@@ -238,9 +284,19 @@ function SortableTaskCardMobile({
           {task.descriptionTask && (
             <p className="text-xs text-[var(--text-muted)] line-clamp-2">{task.descriptionTask}</p>
           )}
-          <div className="mt-1 flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
+          {task.sharedTask && (
+            <p className="mt-0.5 text-[10px] text-[var(--text-muted)]">
+              Por{" "}
+              <span className="font-medium text-[var(--text-primary)]">
+                {task.sharedTask.createdByName?.trim() || task.sharedTask.createdByEmail}
+              </span>
+            </p>
+          )}
+          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
             <CalendarDaysIcon className="h-3 w-3" aria-hidden />
             {fmt}
+            <SharedTaskBadge task={task} />
+            <SubtasksProgressBadge task={task} />
             {task.isRecurring && <ArrowPathIcon className="h-3 w-3 text-brand-purple dark:text-brand-pink" aria-hidden />}
           </div>
         </div>

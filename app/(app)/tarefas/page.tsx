@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   PlusCircleIcon,
@@ -16,6 +16,7 @@ import {
   FlagIcon,
   TagIcon,
   ViewColumnsIcon,
+  UserGroupIcon,
 } from "@heroicons/react/24/outline";
 import { FadeInView } from "@/components/layout/ScrollReveal";
 import { NovaTarefaModal } from "@/components/features/tarefas/NovaTarefaModal";
@@ -26,6 +27,15 @@ import { DateField } from "@/components/ui/DateField";
 import { GlassSelect } from "@/components/ui/GlassSelect";
 import { allObjectives, mockDashboard, mockTarefas } from "@/lib/mock-data";
 import { recordCancellationReasons } from "@/lib/cancel-reasons-storage";
+import { loadAcceptedSharedCategories } from "@/lib/category-share-storage";
+import { STORAGE_KEYS } from "@/lib/constants";
+import { loadAjustesProfile } from "@/lib/ajustes-storage";
+import {
+  loadCollaborativeTasksForViewer,
+  tryMirrorNewOwnerTaskToCollaborativeStore,
+  updateCollaborativeTask,
+} from "@/lib/shared-category-tasks-storage";
+import { getObjectivesForSharedCollaborativeTask } from "@/lib/shared-task-objectives";
 import { cn } from "@/lib/utils";
 import type { Category, Objective, ResponseDashboard, Tarefa, TarefaStatus } from "@/lib/types/models";
 
@@ -47,6 +57,25 @@ type SortOverdue = "custom" | "name-asc" | "name-desc" | "date-asc" | "date-desc
 type KanbanScope = "today" | "date" | "objective" | "category";
 
 /* ─── Overdue list row ─── */
+function viewerEmailTarefas(): string {
+  const p = loadAjustesProfile().email.trim().toLowerCase();
+  try {
+    const login = String(localStorage.getItem(STORAGE_KEYS.email) ?? "").trim().toLowerCase();
+    return p || login;
+  } catch {
+    return p;
+  }
+}
+
+function mergeBaseWithCollaborative(base: Tarefa[]): Tarefa[] {
+  const em = viewerEmailTarefas();
+  const collab = loadCollaborativeTasksForViewer(em);
+  const byId = new Map<number, Tarefa>();
+  for (const t of base) byId.set(t.id, t);
+  for (const t of collab) byId.set(t.id, t);
+  return Array.from(byId.values());
+}
+
 function OverdueRow({ task, onEdit }: { task: Tarefa; onEdit: (t: Tarefa) => void }) {
   const daysLate = Math.max(
     0,
@@ -63,6 +92,16 @@ function OverdueRow({ task, onEdit }: { task: Tarefa; onEdit: (t: Tarefa) => voi
         <p className="truncate font-semibold text-[var(--text-primary)] group-hover:text-brand-pink transition-colors">{task.nameTask}</p>
         {task.descriptionTask && (
           <p className="mt-0.5 truncate text-sm text-[var(--text-muted)]">{task.descriptionTask}</p>
+        )}
+        {task.sharedTask && (
+          <p className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-brand-cyan">
+            <UserGroupIcon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+            <span>Compartilhada</span>
+            <span className="text-[var(--text-muted)]">·</span>
+            <span className="truncate text-[var(--text-muted)]">
+              Por {task.sharedTask.createdByName?.trim() || task.sharedTask.createdByEmail}
+            </span>
+          </p>
         )}
         <div className="mt-1 flex flex-wrap gap-2 text-xs text-[var(--text-muted)]">
           <span>Prevista: {new Date(task.dateTask + "T12:00:00").toLocaleDateString("pt-BR")}</span>
@@ -92,21 +131,62 @@ export default function TarefasPage() {
   const [scopeCategoryId, setScopeCategoryId] = useState(0);
   const [categories, setCategories] = useState<Category[]>([]);
   const [objectives, setObjectives] = useState<Objective[]>([]);
+  const tasksRef = useRef<Tarefa[]>([]);
+  tasksRef.current = tasks;
 
   /* load */
   useEffect(() => {
     fetch("/api/mock/tarefas")
       .then((r) => r.json())
-      .then((d: Tarefa[]) => setTasks(d))
-      .catch(() => setTasks(mockTarefas));
+      .then((d: Tarefa[]) => setTasks(mergeBaseWithCollaborative(d)))
+      .catch(() => setTasks(mergeBaseWithCollaborative(mockTarefas)));
   }, []);
 
   useEffect(() => {
+    const onCollabTasks = () => {
+      setTasks((prev) => {
+        const base = prev.filter((t) => !t.sharedTask);
+        return mergeBaseWithCollaborative(base);
+      });
+    };
+    window.addEventListener("inevolving:shared-tasks-changed", onCollabTasks);
+    return () => window.removeEventListener("inevolving:shared-tasks-changed", onCollabTasks);
+  }, []);
+
+  useEffect(() => {
+    const refreshTasksMerge = () => {
+      fetch("/api/mock/tarefas")
+        .then((r) => r.json())
+        .then((d: Tarefa[]) => setTasks(mergeBaseWithCollaborative(d)))
+        .catch(() => setTasks(mergeBaseWithCollaborative(mockTarefas)));
+    };
+    window.addEventListener("inevolving:shared-categories-changed", refreshTasksMerge);
+    return () => window.removeEventListener("inevolving:shared-categories-changed", refreshTasksMerge);
+  }, []);
+
+  const refreshCategories = useCallback(() => {
     fetch("/api/mock/dashboard")
       .then((r) => r.json())
-      .then((d: ResponseDashboard) => setCategories(d.categoryDTOList ?? []))
-      .catch(() => setCategories(mockDashboard.categoryDTOList));
+      .then((d: ResponseDashboard) => {
+        const base = d.categoryDTOList ?? [];
+        const shared = loadAcceptedSharedCategories().map((x) => x.category);
+        setCategories([...base, ...shared]);
+      })
+      .catch(() => {
+        const shared = loadAcceptedSharedCategories().map((x) => x.category);
+        setCategories([...mockDashboard.categoryDTOList, ...shared]);
+      });
   }, []);
+
+  useEffect(() => {
+    refreshCategories();
+  }, [refreshCategories]);
+
+  useEffect(() => {
+    const onSharedChanged = () => refreshCategories();
+    window.addEventListener("inevolving:shared-categories-changed", onSharedChanged);
+    return () => window.removeEventListener("inevolving:shared-categories-changed", onSharedChanged);
+  }, [refreshCategories]);
 
   useEffect(() => {
     fetch("/api/mock/objetivos")
@@ -120,6 +200,21 @@ export default function TarefasPage() {
     status: TarefaStatus,
     cancellationReason?: string
   ) => {
+    const current = tasksRef.current.find((x) => x.id === id);
+    if (current?.sharedTask) {
+      const updated = updateCollaborativeTask(id, {
+        status,
+        ...(status === "CANCELLED" && cancellationReason !== undefined && cancellationReason !== ""
+          ? { cancellationReason }
+          : {}),
+        ...(status !== "CANCELLED" ? { cancellationReason: undefined } : {}),
+      });
+      if (updated) {
+        setTasks((prev) => prev.map((t) => (t.id === id ? updated : t)));
+      }
+      return;
+    }
+
     setTasks((prev) =>
       prev.map((t) => {
         if (t.id !== id) return t;
@@ -158,10 +253,43 @@ export default function TarefasPage() {
 
   const taskPendingCancel = cancelPendingId != null ? tasks.find((t) => t.id === cancelPendingId) : null;
 
-  const handleCreated = (task: Tarefa) => setTasks((prev) => [task, ...prev]);
+  const objectivesForOwnerNova = useMemo(() => {
+    const ids = new Set<number>();
+    for (const c of categories) {
+      if (c.sharedFrom) continue;
+      c.objectives.forEach((o) => ids.add(o.id));
+    }
+    return objectives.filter((o) => ids.has(o.id));
+  }, [categories, objectives]);
+
+  const handleCreated = (task: Tarefa) => {
+    const profile = loadAjustesProfile();
+    const em = viewerEmailTarefas();
+    const owned = categories
+      .filter((c) => !c.sharedFrom)
+      .map((c) => ({ id: c.id, objectives: c.objectives }));
+    const mirrored = tryMirrorNewOwnerTaskToCollaborativeStore(task, em, profile.name, owned);
+    if (mirrored) {
+      setTasks((prev) => [mirrored, ...prev]);
+      return;
+    }
+    setTasks((prev) => [task, ...prev]);
+  };
 
   const handleSaved = (updated: Tarefa) =>
     setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+
+  const handleDeletedTask = (taskId: number) => {
+    setTasks((prev) => prev.filter((t) => t.id !== taskId));
+  };
+
+  const editObjectiveOverride = useMemo((): Objective[] | undefined => {
+    if (!editingTask?.sharedTask) return undefined;
+    const obs = getObjectivesForSharedCollaborativeTask(editingTask, categories);
+    if (obs && obs.length > 0) return obs;
+    const one = objectives.find((o) => o.id === editingTask.idObjective);
+    return one ? [one] : [];
+  }, [editingTask, categories, objectives]);
 
   const objectiveIdsForCategory = useMemo(() => {
     const cat = categories.find((c) => c.id === scopeCategoryId);
@@ -243,7 +371,17 @@ export default function TarefasPage() {
 
   return (
     <>
-      <NovaTarefaModal open={showCreate} onOpenChange={setShowCreate} onCreated={handleCreated} />
+      <NovaTarefaModal
+        open={showCreate}
+        onOpenChange={setShowCreate}
+        onCreated={handleCreated}
+        objectivesForSelect={objectivesForOwnerNova}
+        contextSubtitle={
+          objectivesForOwnerNova.length === 0
+            ? "Você só pode criar tarefas aqui para objetivos das suas categorias próprias. Para categorias compartilhadas, use a página da categoria (Dashboard → Ver detalhes)."
+            : "Apenas objetivos das suas categorias próprias. Tarefas em categorias que você compartilhou também ficam visíveis aos convidados."
+        }
+      />
       <EditarTarefaModal
         open={editingTask !== null}
         task={editingTask}
@@ -251,6 +389,9 @@ export default function TarefasPage() {
           if (!open) setEditingTask(null);
         }}
         onSaved={handleSaved}
+        objectiveOptionsOverride={editObjectiveOverride}
+        viewerEmail={viewerEmailTarefas()}
+        onDeleted={handleDeletedTask}
       />
 
       <CancelarTarefaModal

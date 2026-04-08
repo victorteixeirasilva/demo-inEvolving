@@ -1,17 +1,27 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   CheckCircleIcon,
   ClockIcon,
   ExclamationTriangleIcon,
+  PlusCircleIcon,
   QueueListIcon,
 } from "@heroicons/react/24/outline";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { StaggerList } from "@/features/animations/StaggerList";
+import { Button } from "@/components/ui/Button";
 import { STORAGE_KEYS } from "@/lib/constants";
+import { NovaTarefaModal } from "@/components/features/tarefas/NovaTarefaModal";
+import {
+  getInviteByToken,
+  leaveSharedCategoryAsInvitee,
+  loadAcceptedSharedCategories,
+} from "@/lib/category-share-storage";
+import type { SharedTaskCollaborationMeta } from "@/lib/shared-category-tasks-storage";
+import { loadAjustesProfile } from "@/lib/ajustes-storage";
 import { cn } from "@/lib/utils";
 import type { Category, Objective } from "@/lib/types/models";
 
@@ -184,6 +194,7 @@ function ObjectiveAnalysis({ o }: { o: Objective }) {
 export default function CategoriaPage() {
   const router = useRouter();
   const [cat, setCat] = useState<Category | null>(null);
+  const [showNovaTarefaShared, setShowNovaTarefaShared] = useState(false);
 
   useEffect(() => {
     try {
@@ -197,6 +208,42 @@ export default function CategoriaPage() {
       router.replace("/dashboard");
     }
   }, [router]);
+
+  const collaborationMeta = useMemo((): SharedTaskCollaborationMeta | null => {
+    if (!cat?.sharedFrom || !cat.shareToken) return null;
+    let em = loadAjustesProfile().email.trim().toLowerCase();
+    try {
+      const login = String(localStorage.getItem(STORAGE_KEYS.email) ?? "").trim().toLowerCase();
+      if (!em) em = login;
+    } catch {
+      /* ignore */
+    }
+    if (!em) return null;
+    const profile = loadAjustesProfile();
+    const inv = getInviteByToken(cat.shareToken);
+    if (inv && inv.status === "accepted" && inv.inviteeEmail === em) {
+      return {
+        sourceCategoryId: inv.categoryId,
+        ownerEmail: inv.ownerEmail,
+        createdByEmail: em,
+        createdByName: profile.name.trim() || undefined,
+      };
+    }
+    /* Fallback: categoria aceita injetada sem registro de convite (ex.: migração antiga). */
+    if (!inv) {
+      const sid = cat.sharedSourceCategoryId;
+      const acc = loadAcceptedSharedCategories().find((x) => x.token === cat.shareToken);
+      if (acc && sid != null) {
+        return {
+          sourceCategoryId: sid,
+          ownerEmail: acc.ownerEmail.trim().toLowerCase(),
+          createdByEmail: em,
+          createdByName: profile.name.trim() || undefined,
+        };
+      }
+    }
+    return null;
+  }, [cat]);
 
   if (!cat) {
     return (
@@ -215,8 +262,46 @@ export default function CategoriaPage() {
     router.push("/dashboard/categoria/objetivo");
   };
 
+  const viewerEmail = () => {
+    const p = loadAjustesProfile().email.trim().toLowerCase();
+    try {
+      const login = String(localStorage.getItem(STORAGE_KEYS.email) ?? "").trim().toLowerCase();
+      return p || login;
+    } catch {
+      return p;
+    }
+  };
+
+  const handleLeaveShared = () => {
+    const token = cat.shareToken;
+    if (!token) return;
+    if (!window.confirm("Remover esta categoria compartilhada do seu dashboard?")) return;
+    const r = leaveSharedCategoryAsInvitee(token, viewerEmail());
+    if (!r.ok) {
+      window.alert(r.message);
+      return;
+    }
+    try {
+      localStorage.removeItem(STORAGE_KEYS.categoriaAtual);
+    } catch {
+      /* ignore */
+    }
+    router.push("/dashboard");
+  };
+
   return (
     <div className="mx-auto max-w-5xl space-y-6 pt-4 md:pt-6">
+      {collaborationMeta && (
+        <NovaTarefaModal
+          open={showNovaTarefaShared}
+          onOpenChange={setShowNovaTarefaShared}
+          onCreated={() => {}}
+          objectivesForSelect={cat.objectives}
+          contextSubtitle={`Categoria compartilhada «${cat.categoryName}». Escolha só entre os objetivos desta categoria. A tarefa aparece em Tarefas para você e para o proprietário.`}
+          createCollaborativeOnly
+          collaborationMeta={collaborationMeta}
+        />
+      )}
       <div>
         <Link
           href="/dashboard"
@@ -230,7 +315,59 @@ export default function CategoriaPage() {
         {cat.categoryDescription && (
           <p className="mt-2 text-[var(--text-muted)]">{cat.categoryDescription}</p>
         )}
+        {cat.sharedFrom && (
+          <p className="mt-2 text-sm font-medium text-brand-cyan">
+            Categoria compartilhada · Proprietário:{" "}
+            <span className="text-[var(--text-muted)]">
+              {cat.sharedFrom.ownerName?.trim() || cat.sharedFrom.ownerEmail}
+            </span>
+          </p>
+        )}
+        {cat.sharedFrom && collaborationMeta && cat.objectives.length > 0 && (
+          <p className="mt-3 rounded-xl border border-brand-cyan/30 bg-brand-cyan/[0.08] px-3 py-2 text-sm text-[var(--text-primary)]">
+            <span className="font-semibold text-brand-cyan">Onde criar tarefas:</span> use o botão{" "}
+            <span className="font-semibold">«Adicionar tarefa»</span> logo abaixo (fluxo do convidado). O botão geral
+            &quot;Nova tarefa&quot; em Tarefas não inclui categorias compartilhadas.
+          </p>
+        )}
+        {cat.sharedFrom && !collaborationMeta && (
+          <p className="mt-3 rounded-xl border border-brand-pink/25 bg-brand-pink/[0.06] px-3 py-2 text-sm text-[var(--text-muted)]">
+            Para ver o botão de adicionar tarefas, o e-mail em <strong className="text-[var(--text-primary)]">Ajustes</strong>{" "}
+            (ou login) precisa ser o mesmo do convite aceito. Na demo Ajuda, use &quot;Perfil: convidado (Ricardo)&quot; para a
+            categoria de Paulo.
+          </p>
+        )}
       </div>
+
+      {collaborationMeta && cat.objectives.length > 0 && (
+        <GlassCard className="border-brand-cyan/30 bg-brand-cyan/[0.08] shadow-[0_0_0_1px_rgba(0,188,212,0.12)]">
+          <p className="text-sm font-semibold text-[var(--text-primary)]">Adicionar tarefa nesta categoria compartilhada</p>
+          <p className="mt-1 text-sm text-[var(--text-muted)]">
+            Só aparecem objetivos desta categoria. A tarefa fica visível em <strong className="text-[var(--text-primary)]">Tarefas</strong>{" "}
+            para você e para o proprietário.
+          </p>
+          <Button type="button" className="mt-4" onClick={() => setShowNovaTarefaShared(true)}>
+            <PlusCircleIcon className="h-5 w-5" aria-hidden />
+            Adicionar tarefa
+          </Button>
+        </GlassCard>
+      )}
+
+      {cat.sharedFrom && cat.shareToken && (
+        <GlassCard className="border-brand-pink/25 bg-brand-pink/[0.06]">
+          <p className="text-sm text-[var(--text-muted)]">
+            Esta categoria foi compartilhada com você. Você pode deixar de vê-la no seu dashboard quando quiser.
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            className="mt-4 border-brand-pink/40 text-brand-pink hover:bg-brand-pink/10"
+            onClick={handleLeaveShared}
+          >
+            Sair desta categoria compartilhada
+          </Button>
+        </GlassCard>
+      )}
 
       {cat.objectives.length === 0 && (
         <GlassCard>

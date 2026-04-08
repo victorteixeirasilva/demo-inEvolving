@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { mockTarefas } from "@/lib/mock-data";
+import { normalizeSubtasksFromPayload } from "@/lib/subtarefas";
 import type { Tarefa, TarefaStatus } from "@/lib/types/models";
 
 /**
@@ -18,6 +19,7 @@ type Body = {
   isRecurring?: boolean;
   recurringDays?: number[];
   recurringUntil?: string;
+  subtasks?: unknown;
 };
 
 /**
@@ -44,6 +46,7 @@ export async function POST(req: Request) {
 
   const newId = Math.floor(Math.random() * 90_000) + 10_000;
   const uuid = `${newId}-mock-${Date.now().toString(36)}`;
+  const subtasks = normalizeSubtasksFromPayload(body.subtasks, body.idObjective, body.dateTask);
 
   const task: Tarefa & { ok: true } = {
     ok: true,
@@ -57,6 +60,7 @@ export async function POST(req: Request) {
     isRecurring: body.isRecurring ?? false,
     recurringDays: body.recurringDays ?? [],
     recurringUntil: body.recurringUntil,
+    ...(subtasks.length > 0 ? { subtasks } : {}),
   };
 
   return NextResponse.json(task);
