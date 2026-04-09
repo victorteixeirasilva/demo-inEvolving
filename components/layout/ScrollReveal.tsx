@@ -3,6 +3,7 @@
 import { motion, useScroll, useSpring, useTransform } from "framer-motion";
 import { useRef } from "react";
 import { useReducedMotion } from "@/hooks/useReducedMotion";
+import { cn } from "@/lib/utils";
 
 export function ParallaxSection({
   children,
@@ -21,7 +22,7 @@ export function ParallaxSection({
   const y = useTransform(smooth, [0, 1], reduce ? [0, 0] : [24, -24]);
 
   return (
-    <motion.div ref={ref} style={{ y }} className={className}>
+    <motion.div ref={ref} style={{ y }} className={cn("relative", className)}>
       {children}
     </motion.div>
   );

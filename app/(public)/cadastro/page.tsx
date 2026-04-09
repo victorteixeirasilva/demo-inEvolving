@@ -75,13 +75,13 @@ export default function CadastroPage() {
       <div className={`w-full max-w-md ${authStyles.wrap}`}>
         <GlassCard className={`${authStyles.inner} !rounded-[1.2rem] border-0 p-6 sm:p-8`}>
           <h1 className="text-center text-2xl font-bold text-[var(--text-primary)]">Cadastro</h1>
-          <p className="mt-2 text-center text-sm text-[var(--text-muted)]">
+          {/* <p className="mt-2 text-center text-sm text-[var(--text-muted)]">
             Fluxo mock — em produção usará{" "}
             <code className="rounded bg-black/5 px-1 py-0.5 text-xs dark:bg-white/10">
               POST /api/authentication/register
             </code>
             .
-          </p>
+          </p> */}
           <form
             onSubmit={handleSubmit(onSubmit)}
             className="mt-8 flex flex-col gap-4"
